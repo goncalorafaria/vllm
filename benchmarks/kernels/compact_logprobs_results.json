@@ -1,0 +1,84 @@
+{
+  "gpu": "H100 80GB HBM3",
+  "vllm": "0.29.0",
+  "flashinfer": "0.6.18",
+  "minRuntime": "1h",
+  "source_sha256": "d060ce4cc23281692407b22ec43aa85563ca2201dfd434c7e0e429e6c745ea21",
+  "scope": "Full vLLM Sampler.__call__, synthetic FP32 logits, vocabulary 151936; excludes model execution, host transfer and serialization",
+  "sampling": {
+    "top_k": -1,
+    "top_p": 1.0,
+    "temperature": 0.8
+  },
+  "recording": [
+    null,
+    128
+  ],
+  "measurement": "Median of 24 rotated repetitions pooled from two independent processes; each repetition 100 iterations; 10 warmup calls per variant",
+  "cases": [
+    {
+      "batch": 1,
+      "no_logprobs_ms": 0.17998508410528302,
+      "native_top128_ms": 0.32400449737906456,
+      "previous_top128_ms": 0.32946455059573054,
+      "new_top128_ms": 0.2900770027190447,
+      "reduction_vs_native_pct": 10.471303619075034,
+      "reduction_vs_previous_pct": 11.95501847026218,
+      "native_extraction_overhead_ms": 0.14401941327378154,
+      "new_extraction_overhead_ms": 0.11009191861376166
+    },
+    {
+      "batch": 8,
+      "no_logprobs_ms": 0.16130759613588452,
+      "native_top128_ms": 0.3596662008203566,
+      "previous_top128_ms": 0.30452658189460635,
+      "new_top128_ms": 0.2627506572753191,
+      "reduction_vs_native_pct": 26.94596915806503,
+      "reduction_vs_previous_pct": 13.718317908203325,
+      "native_extraction_overhead_ms": 0.19835860468447208,
+      "new_extraction_overhead_ms": 0.10144306113943458
+    },
+    {
+      "batch": 64,
+      "no_logprobs_ms": 0.22370481165125966,
+      "native_top128_ms": 0.6248651305213571,
+      "previous_top128_ms": 0.4460651148110628,
+      "new_top128_ms": 0.31605022959411144,
+      "reduction_vs_native_pct": 49.421048774090735,
+      "reduction_vs_previous_pct": 29.147064161702275,
+      "native_extraction_overhead_ms": 0.4011603188700974,
+      "new_extraction_overhead_ms": 0.09234541794285178
+    },
+    {
+      "batch": 256,
+      "no_logprobs_ms": 0.528112247120589,
+      "native_top128_ms": 1.464100731536746,
+      "previous_top128_ms": 1.2341554067097604,
+      "new_top128_ms": 0.7461029314436018,
+      "reduction_vs_native_pct": 49.04019133570961,
+      "reduction_vs_previous_pct": 39.54546344915338,
+      "native_extraction_overhead_ms": 0.935988484416157,
+      "new_extraction_overhead_ms": 0.21799068432301283
+    }
+  ],
+  "validation": {
+    "gpu_unit_tests": 109,
+    "additional_integrated_kernel_cases": 150,
+    "full_sampler_cases": 32,
+    "flashinfer_sampler_composition_cases": 2,
+    "prototype_gpu_cases": 396,
+    "prototype_cpu_interpreter_cases": 48,
+    "width_sweep_cases": 24,
+    "input_unchanged": true,
+    "deterministic_tied_outputs": true
+  },
+  "implementation": "FlashInfer radix lookup for recording entries, with existing parallel Triton normalization and ranks. Native sampling is unchanged. PyTorch lookup retained for noncontiguous rows and vocabularies below 4096.",
+  "limitations": [
+    "Equal-valued entries can have a different deterministic ordering or boundary subset than native torch.topk.",
+    "Small-batch measurements show more variability.",
+    "No whole-model throughput claim.",
+    "The hierarchical prototype is retained as an experiment, not installed in the production path."
+  ],
+  "reference": "https://raw.githubusercontent.com/flashinfer-ai/flashinfer/v0.6.18/flashinfer/topk.py",
+  "validation_scope": "Measurements and GPU tests were run using the Prime RL runtime adapter with these same extraction kernels. The direct vLLM fork integration has not yet been GPU-tested."
+}

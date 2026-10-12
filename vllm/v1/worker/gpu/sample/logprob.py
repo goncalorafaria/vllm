@@ -4,6 +4,7 @@
 import numpy as np
 import torch
 
+import vllm.envs as envs
 from vllm.sampling_params import MAX_LOGPROB_TOKEN_IDS, SamplingParams
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import LogprobsTensors
@@ -118,6 +119,27 @@ def compute_topk_scores(
 ) -> LogprobsTensors:
     assert num_logprobs >= 0
     batch_size, vocab_size = logits.shape
+
+    if (
+        envs.VLLM_USE_COMPACT_LOGPROBS
+        and logits.is_cuda
+        and batch_size > 0
+        and logits.stride(1) == 1
+        and logits.dtype in (torch.float32, torch.float16, torch.bfloat16)
+        and sampled_token_ids.ndim == 1
+        and sampled_token_ids.is_contiguous()
+        and num_logprobs <= min(128, vocab_size)
+        and max_per_req_token_ids == 0
+        and not logits_mode
+    ):
+        from vllm.v1.worker.gpu.sample.compact_logprobs import compute_compact_scores
+
+        result = compute_compact_scores(logits, num_logprobs, sampled_token_ids)
+        if isinstance(cu_num_logits, torch.Tensor):
+            return result._replace(cu_num_generated_tokens_tensor=cu_num_logits)
+        if cu_num_logits is not None:
+            return result._replace(cu_num_generated_tokens=cu_num_logits)
+        return result
 
     if max_per_req_token_ids == 0:
         # Fast path: no request asked for custom logprob_token_ids.
