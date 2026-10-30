@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
+
 import numpy as np
 import torch
 
@@ -44,6 +46,8 @@ class Sampler:
         reasoning_config: ReasoningConfig | None = None,
         return_sampling_mask: bool = False,
     ):
+        self.mc32 = os.environ.get("VLLM_SCORE_CENTERING_MC32") == "1"
+        self.mc_requests = np.zeros(max_num_reqs, dtype=bool)
         self.logprobs_mode = logprobs_mode
         self.compute_nans = envs.VLLM_COMPUTE_NANS_IN_LOGITS  # False by default.
         self.use_fp64_gumbel = use_fp64_gumbel
@@ -68,6 +72,27 @@ class Sampler:
     def add_request(
         self, req_idx: int, prompt_len: int, sampling_params: SamplingParams
     ) -> None:
+        mc = (sampling_params.extra_args or {}).get("score_centering_samples")
+        if mc is not None and not self.mc32:
+            raise ValueError("MC32 requires VLLM_SCORE_CENTERING_MC32=1")
+        self.mc_requests[req_idx] = mc is not None
+        if mc is not None:
+            if (
+                mc != 32
+                or sampling_params.logprobs != 32
+                or not sampling_params.flat_logprobs
+                or sampling_params.detokenize
+                or self.logprobs_mode != "processed_logprobs"
+                or sampling_params.temperature <= 0
+                or sampling_params.top_p != 1.0
+                or sampling_params.top_k > 0
+                or sampling_params.min_p != 0.0
+                or self.num_speculative_tokens != 1
+            ):
+                raise ValueError(
+                    "MC32 requires 32 probes, flat processed logprobs, "
+                    "no detokenization, positive temperature, no speculation"
+                )
         self.sampling_states.add_request(req_idx, sampling_params)
         self.penalties_state.add_request(req_idx, sampling_params)
         self.logit_bias_state.add_request(req_idx, prompt_len, sampling_params)
@@ -160,16 +185,47 @@ class Sampler:
                 logits = processed_logits
             expanded_logits = logits.shape[0] != idx_mapping_np.shape[0]
             cu_num_logits = cu_num_logits_np.tolist() if expanded_logits else None
-            logprobs_tensors = compute_topk_scores(
-                logits,
-                num_logprobs,
-                sampled,
-                cu_num_logits,
-                logprob_token_ids_state=self.logprob_token_ids_state,
-                expanded_idx_mapping=input_batch.expanded_idx_mapping,
-                max_per_req_token_ids=max_per_req_token_ids,
-                logits_mode=self.logprobs_mode in ("raw_logits", "processed_logits"),
-            )
+            mc_rows = self.mc_requests[idx_mapping_np]
+            if mc_rows.any():
+                from vllm.v1.worker.gpu.sample.mc_logprobs import compute_mc_scores
+
+                if expanded_logits or max_per_req_token_ids:
+                    raise ValueError(
+                        "MC32 does not support speculative or requested-token logprobs"
+                    )
+                logprobs_tensors = compute_mc_scores(
+                    processed_logits,
+                    sampled,
+                    self.sampling_states.seeds.gpu,
+                    expanded_idx_mapping,
+                    pos,
+                )
+                normal_requested = (~mc_rows) & (
+                    self.sampling_states.num_logprobs[idx_mapping_np] != NO_LOGPROBS
+                )
+                if normal_requested.any():
+                    from vllm.v1.outputs import LogprobsTensors
+
+                    normal = compute_topk_scores(logits, num_logprobs, sampled)
+                    ids, lp, ranks = normal[:3]
+                    # Probe rows occupy the first 33 slots; the processor slices
+                    # by request width, so other rows can request larger heads.
+                    mask = torch.as_tensor(mc_rows, device=ids.device)[:, None]
+                    ids[:, :33] = torch.where(mask, logprobs_tensors[0], ids[:, :33])
+                    lp[:, :33] = torch.where(mask, logprobs_tensors[1], lp[:, :33])
+                    logprobs_tensors = LogprobsTensors(ids, lp, ranks)
+            else:
+                logprobs_tensors = compute_topk_scores(
+                    logits,
+                    num_logprobs,
+                    sampled,
+                    cu_num_logits,
+                    logprob_token_ids_state=self.logprob_token_ids_state,
+                    expanded_idx_mapping=input_batch.expanded_idx_mapping,
+                    max_per_req_token_ids=max_per_req_token_ids,
+                    logits_mode=self.logprobs_mode
+                    in ("raw_logits", "processed_logits"),
+                )
         else:
             logprobs_tensors = None
 

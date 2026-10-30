@@ -47,6 +47,9 @@ class LogprobsProcessor:
     ) -> "LogprobsProcessor":
         sampling_params = request.sampling_params
         assert sampling_params is not None
+        mc32 = (sampling_params.extra_args or {}).get("score_centering_samples") == 32
+        from vllm.mc_logprobs import MCLogprobs
+
         num_logprobs = sampling_params.num_logprobs
         num_prompt_logprobs = sampling_params.prompt_logprobs
         return cls(
@@ -55,6 +58,8 @@ class LogprobsProcessor:
             logprobs=(
                 None
                 if num_logprobs is None
+                else MCLogprobs()
+                if mc32
                 else create_sample_logprobs(sampling_params.flat_logprobs)
             ),
             prompt_logprobs=(
@@ -82,6 +87,15 @@ class LogprobsProcessor:
         assert self.cumulative_logprob is not None
 
         token_ids_lst, logprobs_lst, ranks_lst, _ = logprobs_lists
+        from vllm.mc_logprobs import MCLogprobs
+
+        if isinstance(self.logprobs, MCLogprobs):
+            if self.tokenizer is not None:
+                raise ValueError("MC32 requires detokenize=False")
+            for ids, lp, rank in zip(token_ids_lst, logprobs_lst, ranks_lst):
+                self.logprobs.append_arrays(ids[:33], lp[:33], rank)
+                self.cumulative_logprob += float(lp[0])
+            return
 
         for rank_np, logprobs_np, token_ids_np in zip(
             ranks_lst, logprobs_lst, token_ids_lst
